@@ -33,5 +33,3 @@ This project was developed as part of an academic research paper investigating p
 | **Annualized Volatility ($\sigma_p$)** | 17.51% | **24.07%** |
 | **Sharpe Ratio ($R_f = 6.7\%$)** | 0.2016 | **0.3286** |
 
----
-
