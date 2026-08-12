@@ -35,12 +35,3 @@ This project was developed as part of an academic research paper investigating p
 
 ---
 
-## Getting Started & Local Setup
-
-### 1. Prerequisites
-Ensure you have Python 3.9+ installed on your system.
-
-### 2. Clone the Repository
-```bash
-git clone [https://github.com/YOUR_USERNAME/Mean-Variance-Efficiency-in-Indian-Equity-Markets.git](https://github.com/YOUR_USERNAME/Mean-Variance-Efficiency-in-Indian-Equity-Markets.git)
-cd Mean-Variance-Efficiency-in-Indian-Equity-Markets
