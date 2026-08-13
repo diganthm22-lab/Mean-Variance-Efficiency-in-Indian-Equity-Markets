@@ -1,9 +1,5 @@
 # Out-of-Sample Efficiency, Covariance Shrinkage, and Regularized Portfolio Optimization in Indian Equity Markets
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![arXiv](https://img.shields.io/badge/arXiv-2608.XXXXX-b31b1b.svg)](https://arxiv.org/)
-
 This repository contains the replication codebase, empirical pipeline, and manuscript source files for the paper: **"Out-of-Sample Efficiency, Covariance Shrinkage, and Regularized Portfolio Optimization in Indian Equity Markets"**.
 
 ---
