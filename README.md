@@ -1,58 +1,31 @@
-# Out-of-Sample Efficiency, Covariance Shrinkage, and Regularized Portfolio Optimization in Indian Equity Markets
+# Dynamic Rolling Out-of-Sample Portfolio Optimization in Indian Equity Markets
 
-This repository contains the replication codebase, empirical pipeline, and manuscript source files for the paper: **"Out-of-Sample Efficiency, Covariance Shrinkage, and Regularized Portfolio Optimization in Indian Equity Markets"**.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
----
+This repository contains the complete open-source Python implementation and LaTeX manuscript for the paper **"Dynamic Rolling Out-of-Sample Portfolio Optimization, Covariance Shrinkage, and $L_2$ Regularization in Indian Equity Markets"**.
 
-## Abstract
+## Core Quantitative Features
+- **Dataset**: 20 High-Liquidity Blue-Chip Constituents from the NIFTY 50 Index (2019–2026).
+- **Analytical Ledoit-Wolf Covariance Shrinkage**: Replaces noisy sample covariance matrices with mathematically optimal target shrinkage estimators ($\Sigma_{\text{shrunk}}$).
+- **$L_2$ Ridge Penalty & Box Constraints**: Prevents extreme asset concentration and corner solutions ($0\% \le w_i \le 15\%$).
+- **Dynamic Rolling-Window Rebalancing**: 36-month sliding lookback window with monthly re-optimization.
+- **Turnover & Transaction Friction**: Realized execution cost deduction ($15\text{ bps} \times \text{Turnover}$).
 
-Classical Markowitz Mean-Variance Optimization often fails in real-world trading due to parameter estimation noise, the "Error Maximizer" paradox, and severe sector over-concentration. 
+## Empirical Performance Summary (2022–2026 Backtest)
 
-This project implements an institutionally robust quantitative portfolio optimization architecture applied to **12 blue-chip constituents of the NIFTY 50 index** across six major sectors (2020–2026). To eliminate corner-solution allocations and overfitting, we integrate:
-1. **Ledoit-Wolf Linear Covariance Shrinkage** to stabilize noisy covariance matrices.
-2. **$L_2$ Ridge Regularization** within the Sequential Least Squares Programming (SLSQP) solver.
-3. **Hard Weight Bounds** ($2\% \le w_i \le 20\%$) to enforce mandatory cross-sector diversification.
-4. **Walk-Forward Out-of-Sample Backtesting** (Training: 2020–2023; Testing: 2024–2026).
-5. **Transaction Friction Accounting** (15 bps cost penalty per rebalance).
-
----
-
-## Key Findings & Empirical Performance
-
-Evaluated on unseen out-of-sample daily return data (January 2024 – August 2026) net of transaction costs:
-
-| Metric | Equal-Weighted Baseline | Regularized Shrunk Optimal |
+| Metric | Naive Equal-Weighted ($1/N$) | Regularized Shrunk Optimal |
 | :--- | :---: | :---: |
-| **Annualized Net Return** | 2.29% | **3.59%** (+130 bps) |
-| **Annualized Volatility** | **13.68%** | 14.35% |
-| **Out-of-Sample Sharpe Ratio ($R_f=6.7\%$)** | -0.3221 | **-0.2167** |
-| **1-Day 95% Historical VaR** | **1.34%** | 1.38% |
+| **Annualized Net Return** | **9.14%** | 8.95% |
+| **Annualized Volatility** | **12.81%** | 14.11% |
+| **Sharpe Ratio ($R_f=6.7\%$)** | **0.1902** | 0.1598 |
+| **1-Day 95% Historical VaR** | **1.26%** | 1.36% |
+| **Maximum Drawdown** | **-15.90%** | -18.12% |
 
----
+## Getting Started
 
-## Portfolio Asset Universe ($N=12$)
+### Prerequisites
+Install the required dependencies inside your virtual environment:
 
-Capital is distributed across leading Indian equities representing key economic sectors:
-
-- **Industrials / Capital Goods:** `LT.NS` (Larsen & Toubro)
-- **Consumer Durables:** `TITAN.NS` (Titan Company)
-- **FMCG / Staples:** `ITC.NS` (ITC Limited)
-- **Telecommunications:** `BHARTIARTL.NS` (Bharti Airtel)
-- **Information Technology:** `INFY.NS` (Infosys), `TCS.NS`, `WIPRO.NS`
-- **Financial Services:** `AXISBANK.NS`, `HDFCBANK.NS`, `ICICIBANK.NS`
-- **Automobiles:** `MARUTI.NS` (Maruti Suzuki)
-- **Energy / Conglomerates:** `RELIANCE.NS` (Reliance Industries)
-
----
-
-## Mathematical Framework
-
-### 1. Linear Covariance Shrinkage
-The sample covariance matrix $\mathbf{\Sigma}_{\text{sample}}$ is shrunk toward a diagonal target matrix $\mathbf{F} = \text{diag}(\mathbf{\Sigma}_{\text{sample}})$:
-$$\mathbf{\Sigma}_{\text{shrunk}} = (1 - \delta) \mathbf{\Sigma}_{\text{sample}} + \delta \mathbf{F}, \quad \delta = 0.20$$
-
-### 2. Regularized Objective Function
-$$\min_{\mathbf{w}} \quad -\left( \frac{\mathbf{w}^T \mathbf{\mu}_{\text{train}} - R_f}{\sqrt{\mathbf{w}^T \mathbf{\Sigma}_{\text{shrunk}} \mathbf{w}}} \right) + \lambda \sum_{i=1}^N w_i^2$$
-Subject to:
-$$\sum_{i=1}^N w_i = 1.0, \quad 0.02 \le w_i \le 0.20 \quad \forall i$$
-
+```bash
+pip install numpy pandas yfinance scikit-learn scipy matplotlib
