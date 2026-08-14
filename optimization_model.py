@@ -1,136 +1,207 @@
 import numpy as np
 import pandas as pd
 import yfinance as yf
-import scipy.optimize as sco
+from scipy.optimize import minimize
+from sklearn.covariance import LedoitWolf
 import matplotlib.pyplot as plt
 
-# ---------------------------------------------------------
-# 1. Configuration & Data Ingestion (Expanded Universe)
-# ---------------------------------------------------------
-TICKERS = [
-    'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS',
-    'BHARTIARTL.NS', 'ITC.NS', 'WIPRO.NS', 'LT.NS', 'MARUTI.NS',
-    'AXISBANK.NS', 'TITAN.NS'
+# ==========================================
+# 1. DATA ACQUISITION & SAFE PREPARATION
+# ==========================================
+# 20 High-Liquidity NIFTY 50 Blue Chip Constituents
+NIFTY_TICKERS = [
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS",
+    "BHARTIARTL.NS", "ITC.NS", "HCLTECH.NS", "LT.NS", "KOTAKBANK.NS",
+    "AXISBANK.NS", "HINDUNILVR.NS", "SBIN.NS", "MARUTI.NS", "SUNPHARMA.NS",
+    "TITAN.NS", "ULTRACEMCO.NS", "ASIANPAINT.NS", "NTPC.NS", "POWERGRID.NS"
 ]
 
-START_DATE = '2020-01-01'
-SPLIT_DATE = '2023-12-31'  # In-Sample (Train): 2020-2023, Out-of-Sample (Test): 2024-2026
-END_DATE   = '2026-08-01'
-RISK_FREE_RATE = 0.067
-TRANSACTION_COST = 0.0015  # 15 bps friction per rebalance
+def fetch_data(tickers, start_date="2019-01-01", end_date="2026-08-01"):
+    print("Fetching historical price data from Yahoo Finance...")
+    price_data = {}
+    
+    # Fetch ticker by ticker to prevent cross-asset NaN propagation
+    for ticker in tickers:
+        try:
+            df = yf.download(ticker, start=start_date, end=end_date, progress=False)
+            if not df.empty:
+                # Handle YFinance multi-index or single-index Close/Adj Close
+                if 'Adj Close' in df.columns:
+                    series = df['Adj Close']
+                elif 'Close' in df.columns:
+                    series = df['Close']
+                else:
+                    series = df.iloc[:, 0]
+                
+                # Convert to 1D Series if returned as DataFrame
+                if isinstance(series, pd.DataFrame):
+                    series = series.iloc[:, 0]
+                    
+                price_data[ticker] = series
+        except Exception as e:
+            print(f"Warning: Could not fetch {ticker}: {e}")
 
-print("Fetching NIFTY 50 market data from Yahoo Finance...")
-raw_data = yf.download(TICKERS, start=START_DATE, end=END_DATE)
+    # Combine into a single DataFrame
+    prices = pd.DataFrame(price_data)
+    
+    # Forward fill missing values (e.g. holidays), then backfill
+    prices = prices.ffill().bfill().dropna(axis=1)
+    
+    # Compute Log Daily Returns
+    returns = np.log(prices / prices.shift(1)).dropna()
+    print(f"Data successfully loaded: {returns.shape[1]} assets across {returns.shape[0]} trading days.")
+    return returns
 
-# Handle both 'Close' and 'Adj Close' column names safely
-if 'Close' in raw_data.columns:
-    price_data = raw_data['Close']
-elif 'Adj Close' in raw_data.columns:
-    price_data = raw_data['Adj Close']
-else:
-    price_data = raw_data
+# ==========================================
+# 2. CORE OPTIMIZATION ENGINE
+# ==========================================
+def optimize_portfolio(R_train, Rf=0.067, l2_reg=0.02, w_bounds=(0.0, 0.15)):
+    N = R_train.shape[1]
+    mu_train = R_train.mean().values * 252
+    
+    # Analytical Ledoit-Wolf Covariance Shrinkage
+    lw = LedoitWolf()
+    lw.fit(R_train.values)
+    Sigma_shrunk = lw.covariance_ * 252  # Annualized
+    
+    def objective(w):
+        port_ret = np.dot(w, mu_train)
+        port_vol = np.sqrt(np.maximum(1e-8, np.dot(w.T, np.dot(Sigma_shrunk, w))))
+        sharpe = (port_ret - Rf) / port_vol
+        l2_penalty = l2_reg * np.sum(w**2)
+        return -sharpe + l2_penalty
 
-# Drop failed/empty columns automatically
-data = price_data.dropna(axis=1, how='all').ffill().bfill()
-TICKERS = list(data.columns)
-num_assets = len(TICKERS)
-print(f"[+] Active Universe ({num_assets} assets): {TICKERS}")
+    constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
+    bounds = [w_bounds for _ in range(N)]
+    init_w = np.array([1.0 / N] * N)
 
-returns = np.log(data / data.shift(1)).dropna()
+    res = minimize(
+        objective, 
+        init_w, 
+        method='SLSQP', 
+        bounds=bounds, 
+        constraints=constraints
+    )
+    return res.x if res.success else init_w
 
-# Partition data into In-Sample (Train) and Out-of-Sample (Test)
-train_returns = returns.loc[:SPLIT_DATE]
-test_returns  = returns.loc[SPLIT_DATE:]
+# ==========================================
+# 3. DYNAMIC ROLLING-WINDOW BACKTEST ENGINE
+# ==========================================
+def run_rolling_backtest(returns, lookback_months=36, fee_bps=15):
+    fee_pct = fee_bps / 10000.0
+    dates = returns.index
+    N = returns.shape[1]
+    
+    # Resample to month-start dates
+    monthly_dates = returns.resample('MS').first().index
+    
+    portfolio_returns = []
+    equal_weight_returns = []
+    
+    current_w = np.array([1.0 / N] * N)
+    ew_w = np.array([1.0 / N] * N)
+    
+    print("Running dynamic rolling-window optimization backtest...")
+    
+    for i in range(len(monthly_dates) - 1):
+        t_start = monthly_dates[i]
+        t_end = monthly_dates[i+1]
+        
+        train_start = t_start - pd.DateOffset(months=lookback_months)
+        
+        # Skip until full 36-month lookback is available
+        if train_start < dates[0]:
+            continue
+            
+        R_train = returns.loc[train_start:t_start]
+        R_test = returns.loc[t_start:t_end].iloc[:-1]
 
-# ---------------------------------------------------------
-# 2. Covariance Shrinkage (Pure NumPy)
-# ---------------------------------------------------------
-def shrinkage_covariance(returns_df, delta=0.20):
-    sample_cov = returns_df.cov().values * 252
-    prior_target = np.diag(np.diag(sample_cov))  # Diagonal target
-    shrunk_cov = (1 - delta) * sample_cov + delta * prior_target
-    return shrunk_cov
+        if R_train.empty or R_test.empty:
+            continue
 
-mu_train = train_returns.mean().values * 252
-cov_train_shrunk = shrinkage_covariance(train_returns, delta=0.20)
+        # Re-optimize portfolio weights
+        new_w = optimize_portfolio(R_train, Rf=0.067, l2_reg=0.02, w_bounds=(0.0, 0.15))
+        
+        # Calculate Turnover & Transaction Friction
+        turnover = np.sum(np.abs(new_w - current_w))
+        friction_cost = turnover * fee_pct
+        
+        # Portfolio Returns
+        opt_rets = R_test.dot(new_w).copy()
+        ew_rets = R_test.dot(ew_w).copy()
+        
+        # Deduct friction on rebalance day
+        if len(opt_rets) > 0:
+            opt_rets.iloc[0] -= friction_cost
+            
+        portfolio_returns.append(opt_rets)
+        equal_weight_returns.append(ew_rets)
+        current_w = new_w
 
-# ---------------------------------------------------------
-# 3. Optimization Routines
-# ---------------------------------------------------------
-def portfolio_performance(weights, mu, cov):
-    ret = np.sum(weights * mu)
-    vol = np.sqrt(np.dot(weights.T, np.dot(cov, weights)))
-    return ret, vol
+    if not portfolio_returns:
+        raise ValueError("No backtest results generated. Check input date ranges.")
 
-def neg_sharpe_regularized(weights, mu, cov, rf=RISK_FREE_RATE, l2_gamma=0.10):
-    ret, vol = portfolio_performance(weights, mu, cov)
-    sr = (ret - rf) / vol
-    l2_penalty = l2_gamma * np.sum(weights ** 2)
-    return -(sr - l2_penalty)
+    oos_opt = pd.concat(portfolio_returns)
+    oos_ew = pd.concat(equal_weight_returns)
+    return oos_opt, oos_ew
 
-constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
-bounds = tuple((0.02, 0.20) for _ in range(num_assets))
-init_weights = np.array([1.0 / num_assets] * num_assets)
+# ==========================================
+# 4. METRIC COMPUTATION & DISPLAY
+# ==========================================
+def compute_metrics(returns_series, Rf=0.067):
+    ann_ret = returns_series.mean() * 252
+    ann_vol = returns_series.std() * np.sqrt(252)
+    sharpe = (ann_ret - Rf) / ann_vol
+    var_95 = np.percentile(returns_series, 5) * -1
+    
+    # Cumulative Maximum Drawdown
+    cum_rets = np.exp(returns_series.cumsum())
+    peak = cum_rets.cummax()
+    drawdown = (cum_rets - peak) / peak
+    max_drawdown = drawdown.min()
+    
+    return {
+        "Annualized Net Return": f"{ann_ret * 100:.2f}%",
+        "Annualized Volatility": f"{ann_vol * 100:.2f}%",
+        "Sharpe Ratio (Rf=6.7%)": f"{sharpe:.4f}",
+        "1-Day 95% VaR": f"{var_95 * 100:.2f}%",
+        "Max Drawdown": f"{max_drawdown * 100:.2f}%"
+    }
 
-# Execute SLSQP Optimization
-opt_res = sco.minimize(
-    neg_sharpe_regularized, 
-    init_weights,
-    args=(mu_train, cov_train_shrunk, RISK_FREE_RATE, 0.10),
-    method='SLSQP', 
-    bounds=bounds, 
-    constraints=constraints
-)
-
-w_optimal = opt_res.x
-
-# ---------------------------------------------------------
-# 4. Out-of-Sample Evaluation
-# ---------------------------------------------------------
-w_equal = np.array([1.0 / num_assets] * num_assets)
-
-def evaluate_oos_performance(weights, test_ret_df, rf=RISK_FREE_RATE, cost=TRANSACTION_COST):
-    daily_portfolio_ret = test_ret_df.dot(weights)
-    ann_ret = (daily_portfolio_ret.mean() * 252) - cost
-    ann_vol = daily_portfolio_ret.std() * np.sqrt(252)
-    sharpe  = (ann_ret - rf) / ann_vol
-    var_95 = -np.percentile(daily_portfolio_ret, 5)
-    return ann_ret, ann_vol, sharpe, var_95
-
-eq_ret, eq_vol, eq_sr, eq_var = evaluate_oos_performance(w_equal, test_returns)
-opt_ret, opt_vol, opt_sr, opt_var = evaluate_oos_performance(w_optimal, test_returns)
-
-# ---------------------------------------------------------
-# 5. Output Results
-# ---------------------------------------------------------
-print("\n" + "="*65)
-print("OUT-OF-SAMPLE EVALUATION RESULTS (TEST PERIOD: 2024 - 2026)")
-print("="*65)
-results_df = pd.DataFrame({
-    'Metric': ['Annualized Net Return', 'Annualized Volatility', 'Out-of-Sample Sharpe Ratio', '1-Day 95% VaR'],
-    'Equal-Weighted Baseline': [f"{eq_ret*100:.2f}%", f"{eq_vol*100:.2f}%", f"{eq_sr:.4f}", f"{eq_var*100:.2f}%"],
-    'Regularized Shrunk Optimal': [f"{opt_ret*100:.2f}%", f"{opt_vol*100:.2f}%", f"{opt_sr:.4f}", f"{opt_var*100:.2f}%"]
-})
-print(results_df.to_string(index=False))
-
-print("\n" + "="*65)
-print("OPTIMAL ASSET WEIGHT ALLOCATION (V2)")
-print("="*65)
-weights_df = pd.DataFrame({'Ticker': TICKERS, 'Optimal Weight (%)': np.round(w_optimal * 100, 2)})
-print(weights_df.sort_values(by='Optimal Weight (%)', ascending=False).to_string(index=False))
-
-# Plot Out-of-Sample Performance
-plt.figure(figsize=(10, 5))
-cum_eq = (1 + test_returns.dot(w_equal)).cumprod()
-cum_opt = (1 + test_returns.dot(w_optimal)).cumprod()
-
-plt.plot(cum_eq, label='Equal-Weighted Baseline', linestyle='--')
-plt.plot(cum_opt, label='Regularized Shrunk Optimal Portfolio', linewidth=2)
-plt.title('Out-of-Sample Cumulative Performance (2024 - 2026)')
-plt.xlabel('Date')
-plt.ylabel('Growth of ₹1 Investment')
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.savefig('oos_performance_comparison.png', dpi=300)
-print("\n[+] Chart saved as 'oos_performance_comparison.png'")
+# ==========================================
+# 5. MAIN PIPELINE EXECUTION
+# ==========================================
+if __name__ == "__main__":
+    returns = fetch_data(NIFTY_TICKERS)
+    opt_rets, ew_rets = run_rolling_backtest(returns)
+    
+    opt_metrics = compute_metrics(opt_rets)
+    ew_metrics = compute_metrics(ew_rets)
+    
+    results_df = pd.DataFrame({
+        "Equal-Weighted Baseline (1/N)": ew_metrics,
+        "Regularized Shrunk Optimal": opt_metrics
+    })
+    
+    print("\n" + "="*55)
+    print("        OUT-OF-SAMPLE BACKTEST RESULTS (2022-2026)")
+    print("="*55)
+    print(results_df)
+    print("="*55)
+    
+    # Generate and save equity curve
+    cum_opt = np.exp(opt_rets.cumsum())
+    cum_ew = np.exp(ew_rets.cumsum())
+    
+    plt.figure(figsize=(10, 5))
+    plt.plot(cum_ew, label="Equal-Weighted Baseline (1/N)", linestyle="--", color="gray")
+    plt.plot(cum_opt, label="Regularized Shrunk Optimal Portfolio", color="#1f77b4", linewidth=2)
+    plt.title("Out-of-Sample Dynamic Cumulative Performance (2022 - 2026)")
+    plt.xlabel("Date")
+    plt.ylabel("Growth of ₹1 Investment")
+    plt.legend()
+    plt.grid(True, linestyle=":", alpha=0.6)
+    plt.tight_layout()
+    plt.savefig("oos_performance.png", dpi=300)
+    print("\nChart saved successfully to 'oos_performance.png'.")
+    
